@@ -159,20 +159,19 @@ type RequestVoteReply struct {
 //
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (2A, 2B).
-	if args.Term < rf.currentTerm {
-		reply.Term = rf.currentTerm
+	currentTerm, _ := rf.GetState()
+	if args.Term < currentTerm {
+		reply.Term = currentTerm
 		reply.VoteGranted = false
 		return
 	}
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
 	if args.Term > rf.currentTerm {
-		rf.mu.Lock()
 		rf.currentTerm = args.Term
 		rf.role = 0
 		rf.votedFor = -1
-		rf.mu.Unlock()
 	}
-	rf.mu.Lock()
-	defer rf.mu.Unlock()
 	lastIndex := len(rf.log)
 	lastTerm := -1
 	if lastIndex > 0 {
@@ -183,6 +182,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 		return
 	}
 	rf.votedFor = args.CandidateId
+	reply.Term = rf.currentTerm
 	reply.VoteGranted = true
 	return
 }
@@ -202,21 +202,20 @@ type AppendEntriesReply struct {
 
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
 	// Your code here (2A, 2B).
-	if args.Term < rf.currentTerm {
-		reply.Term = rf.currentTerm
+	currentTerm, _ := rf.GetState()
+	if args.Term < currentTerm {
+		reply.Term = currentTerm
 		reply.Success = false
 		return
 	}
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
 	if args.Term > rf.currentTerm {
-		rf.mu.Lock()
 		rf.currentTerm = args.Term
 		rf.role = 0
 		rf.votedFor = -1
-		rf.mu.Unlock()
 	}
 	if len(args.Entries) == 0 {
-		rf.mu.Lock()
-		defer rf.mu.Unlock()
 		rf.lastTick = time.Now()
 		reply.Term = rf.currentTerm
 		reply.Success = true
@@ -260,8 +259,10 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 	if !ok || rf.role != 1 {
 		return
 	}
-	if reply.Term > rf.currentTerm {
-		rf.role = 0
+	if reply.Term != rf.currentTerm {
+		if reply.Term > rf.currentTerm {
+			rf.role = 0
+		}
 		return
 	}
 	if reply.VoteGranted {
@@ -274,13 +275,13 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 }
 
 func (rf *Raft) heartsbeats() {
-	for rf.role == 2 && rf.killed() == false {
+	for currTerm, isLeader := rf.GetState(); isLeader && rf.killed() == false; {
 		for index, _ := range rf.peers {
 			if index == rf.me {
 				continue
 			}
 			args := AppendEntriesArgs{
-				Term:     rf.currentTerm,
+				Term:     currTerm,
 				LeaderId: rf.me,
 				Entries:  []LogEntry{},
 			}
@@ -295,7 +296,8 @@ func (rf *Raft) heartsbeats() {
 
 func (rf *Raft) sendAppendEntries(server int, args *AppendEntriesArgs, reply *AppendEntriesReply) {
 	ok := rf.peers[server].Call("Raft.AppendEntries", args, reply)
-	if !ok || rf.role != 2 {
+	_, isLeader := rf.GetState()
+	if !ok || !isLeader {
 		return
 	}
 }
@@ -382,9 +384,12 @@ func (rf *Raft) election() {
 	rf.role = 1
 	rf.mu.Unlock()
 	for index, _ := range rf.peers {
+		rf.mu.Lock()
 		if rf.role != 1 {
+			rf.mu.Unlock()
 			break
 		}
+		rf.mu.Unlock()
 		if index == rf.me {
 			continue
 		}
