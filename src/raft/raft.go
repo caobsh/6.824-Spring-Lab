@@ -230,6 +230,7 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 		return
 	}
 	index := args.PrevLogIndex + 1
+	// should check whether prevlog > commitindex?
 	for _, entry := range args.Entries {
 		if index >= len(rf.log) {
 			rf.log = append(rf.log, entry)
